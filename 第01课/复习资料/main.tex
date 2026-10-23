@@ -1,0 +1,386 @@
+% !TeX program = xelatex
+% CS336 Spring 2026 / Lecture 01 / Personal review notes
+% Self-contained source. Compile twice with XeLaTeX for cross-references.
+\documentclass[UTF8,fontset=fandol,zihao=-4,a4paper]{ctexart}
+\usepackage[margin=22mm,headheight=16pt,headsep=7mm,footskip=11mm]{geometry}
+\usepackage{amsmath,amssymb,booktabs,tabularx,array,xcolor,enumitem,fancyhdr}
+\usepackage[T1]{fontenc}
+\usepackage{textcomp,listings}
+\usepackage[unicode,colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black]{hyperref}
+\definecolor{accent}{HTML}{205F99}
+\definecolor{muted}{HTML}{536170}
+\definecolor{soft}{HTML}{F2F6FA}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.35em}
+\linespread{1.13}
+\setlist[itemize]{leftmargin=1.7em,itemsep=0.25em,topsep=0.35em}
+\setlist[enumerate]{leftmargin=2em,itemsep=0.35em,topsep=0.35em}
+\setlength{\emergencystretch}{2em}
+\renewcommand{\arraystretch}{1.3}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\ctexset{
+ section={format=\Large\bfseries\color{accent},beforeskip=0.7em,afterskip=0.45em},
+ subsection={format=\normalsize\bfseries,beforeskip=0.65em,afterskip=0.25em}
+}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{muted}CS336 · 第 01 课}
+\fancyhead[R]{\small\color{muted}课程概览与分词}
+\fancyfoot[L]{\footnotesize\color{muted}Spring 2026 · 个人复习资料}
+\fancyfoot[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.35pt}
+\lstset{basicstyle=\ttfamily\small,backgroundcolor=\color{soft},
+ frame=single,rulecolor=\color{accent!20},columns=fullflexible,
+ keepspaces=true,breaklines=true,showstringspaces=false,
+ xleftmargin=0.6em,xrightmargin=0.6em,aboveskip=0.65em,belowskip=0.65em}
+\newcommand{\focus}[1]{\begin{quote}\small\color{accent}\bfseries #1\end{quote}}
+\newcommand{\tagline}[1]{\noindent{\small\color{muted}#1}\par}
+\newcommand{\tok}[1]{\texttt{#1}}
+\newcommand{\spacechar}{\textvisiblespace}
+\newcommand{\nextpage}{\clearpage}
+\hypersetup{pdftitle={CS336 第01课复习：课程概览与分词},pdfauthor={个人学习笔记},linktoc=all}
+\begin{document}
+
+\begin{center}
+{\small\color{muted}STANFORD CS336 · LANGUAGE MODELING FROM SCRATCH}\\[0.55em]
+{\LARGE\bfseries 第 01 课复习资料}\\[0.3em]
+{\large 课程概览与分词}
+\end{center}
+
+\setcounter{tocdepth}{1}
+\tableofcontents
+\clearpage
+
+\tagline{阅读主线：预算约束 $\rightarrow$ 文本表示 $\rightarrow$ 三种方案的取舍 $\rightarrow$ BPE 的训练、编码与解码。}
+\section{先定位：这门课究竟在解决什么问题？}\label{sec:overview}
+
+\subsection{全课程的主线：给定资源，构建更好的语言模型}
+CS336 强调通过亲手构建来理解语言模型。一个设计选择通常会影响整条链路：分词改变序列长度，序列长度影响计算成本，成本又决定同一预算能做多少训练与实验。
+
+\focus{本课的核心问题：怎样在有限的计算与数据预算下，把原始文本变成模型适合处理的序列？}
+学习目标可分成三层：\textbf{机制}是组件如何工作；\textbf{思维方式}是如何判断瓶颈、设计实验和考虑扩展；\textbf{经验直觉}是某个设置在实验中是否有效。前两者较容易迁移，第三者往往依赖模型规模与数据条件。
+
+\subsection{五个模块：每个模块回答一个问题}
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{24mm}Y@{}}
+\toprule
+模块 & 需要回答的问题\\
+\midrule
+基础 Basics & 文本如何编码？模型如何预测？参数如何训练？\\
+系统 Systems & 如何减少数据搬运，利用 GPU，并组织多卡计算与推理？\\
+扩展规律 Scaling & 如何通过较小实验，选择更大规模的模型与训练配方？\\
+数据 Data & 如何选择、清洗、去重和混合数据，并评估效果？\\
+对齐 Alignment & 如何用示范、偏好或可验证反馈，进一步改善模型行为？\\
+\bottomrule
+\end{tabularx}
+
+\subsection{背景知道到什么程度就够了？}
+从统计语言模型到神经网络、Transformer，再到大规模预训练与后训练，外部使用形式不断变化，但表示、计算、优化和数据仍是底层问题。公开权重有助于使用模型；研究与复现完整训练还需要方法、代码和数据等信息。
+
+第一课列举历史与开放模型，是为了说明课程的背景，不要求背模型排行榜。模型结构、并行训练和强化学习在这里属于\textbf{全课程预告}，本课需要深入掌握的是\textbf{分词与 BPE}。
+
+\tagline{复习路线：先读第 \ref{sec:interface}--\ref{sec:practice} 节建立理解；快速回顾用第 \ref{sec:review} 节；自测见第 \ref{sec:quiz} 节。}
+
+\nextpage
+\section{接上主线：语言模型为什么先需要分词？}\label{sec:interface}
+\tagline{本节目标：区分文本、token、ID、向量，以及模型预测的对象。}
+
+\subsection{从文字到预测，再回到文字}
+人看到的是字符串。分词器先把它转换成整数序列，模型再通过嵌入表把这些整数转换成向量。整数在这里是\textbf{编号}，不是可以直接比较语义大小的数值。
+\[
+\text{原始文本}
+\xrightarrow{\text{encode}}
+\text{token ID 序列}
+\xrightarrow{\text{嵌入查表}}
+\text{向量序列}
+\]
+\[
+\text{向量序列}
+\xrightarrow{\text{模型}}
+\text{下一 token 的概率}
+\xrightarrow{\text{选择一个 ID}}
+\text{扩展序列}
+\xrightarrow{\text{decode}}
+\text{文本}
+\]
+\textbf{补充背景：}对自回归语言模型，若 token 序列为 $x_1,\ldots,x_T$，则
+\[
+p_\theta(x_1,\ldots,x_T)
+=\prod_{t=1}^{T}p_\theta(x_t\mid x_{<t}).
+\]
+其中 $\theta$ 是模型参数，$x_{<t}$ 是前文 token；第一个 token 可在起始标记等约定条件下预测。训练时提高真实后续 token 的概率；生成时反复预测、选择并接回序列。本课无需展开 Transformer 内部结构。
+
+\subsection{分词器的两个接口}
+\begin{lstlisting}
+encode(text: str) -> list[int]
+decode(ids: list[int]) -> str
+\end{lstlisting}
+对于本课不做有损归一化的字节级分词器，需要满足
+\[
+\operatorname{decode}(\operatorname{encode}(s))=s.
+\]
+这是“原文能够还原”。反过来，对于任意 ID 序列，重新编码解码后的字符串，\textbf{不保证}得到相同 ID 序列；同一段字节可能有不同的 token 划分。
+
+\subsection{四个概念不能混在一起}
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{24mm}Y@{}}
+\toprule
+概念 & 本课应采用的理解\\
+\midrule
+Unicode 码点 & 字符的编号；不等于 UTF-8 中的一个字节。\\
+UTF-8 字节 & 文本的编码单位，单个值在 0--255；一个码点可占多个字节。\\
+Token / ID & 分词器定义的片段及其编号；片段不一定是完整单词或字符。\\
+Embedding & 根据 ID 查到的可学习向量，属于语言模型参数。\\
+\bottomrule
+\end{tabularx}
+
+\focus{分词器确定“用什么单位描述文本”；语言模型学习“这些单位怎样组合”。二者的训练不是同一个过程。}
+例如，字符“你”的码点是 20320，而 UTF-8 字节为 $[228,189,160]$。字节级 BPE 可以保留这些单字节，也可以在训练中把常见组合合成更大的 token。
+
+\nextpage
+\section{理解取舍：为什么不直接用字符、字节或单词？}\label{sec:tradeoff}
+\tagline{本节目标：用词表大小与序列长度两条轴，理解 BPE 的动机。}
+
+\subsection{三种直观方案，各自付出什么代价？}
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{17mm}Y Y@{}}
+\toprule
+方案 & 好处 & 主要代价\\
+\midrule
+字符级 & 容易理解和还原；比逐字节更紧凑。 & 覆盖广泛 Unicode 时词表较大；稀有字符难学，序列仍可能偏长。\\
+字节级 & 基础词表只需 256 项；能表示任意合法 UTF-8 文本。 & 每个字节一个 token，序列较长；非 ASCII 字符会占多个 token。\\
+整词级 & 常见词可用一个 token，序列较短。 & 词的种类多、长尾严重；固定词表会遇到未登录词，未知词标记可能丢失原文。\\
+字节级 BPE & 保留字节兜底，把高频片段压成较短序列。 & 需要学习词表和合并规则；效果依赖语料，仍有词表成本。\\
+\bottomrule
+\end{tabularx}
+
+\subsection{怎样衡量“文本被压短了多少”？}
+讲义采用的指标是\textbf{每 token 对应的 UTF-8 字节数}：
+\[
+r(s)=\frac{B(s)}{T(s)},\qquad
+B=\text{UTF-8 字节数},\quad T=\text{token 数}.
+\]
+对同一段非空文本，$r$ 越大，token 序列越短。这个指标不等于压缩文件的存储压缩率，因为没有计入 ID 的存储位宽及词表开销。
+
+例如“你好”：2 个码点、6 个 UTF-8 字节。字符级表示为 2 个 token，$r=3$；纯字节级表示为 6 个 token，$r=1$。空字符串的 $B/T$ 是 $0/0$，需要单独处理。
+
+\subsection{为什么序列越短，不代表一切都更好？}
+\textbf{补充解释：}设词表大小为 $V$，隐藏维度为 $d$，序列长度为 $T$。
+\begin{itemize}
+\item \textbf{序列成本：}标准稠密自注意力的核心计算含 $T^2$ 项；在其他条件相同时，缩短序列能显著减小这一部分开销。
+\item \textbf{词表成本：}嵌入表有约 $Vd$ 个参数，输出词表投影也依赖 $V$；增大词表会增加相应成本。是否共享权重会影响实际参数总量。
+\item \textbf{统计成本：}词表中的稀有片段见得太少，就难以学到可靠表示。
+\end{itemize}
+
+\focus{BPE 的切入点：常见片段合得大一些，罕见片段拆得细一些。在序列长度、词表规模与覆盖能力之间取得实用折中。}
+这里的 $T^2$ 指自注意力相关部分，不能据此断言“token 数减半，整个模型训练就必然快四倍”。
+
+\nextpage
+\section{核心例子：BPE 怎样从语料中学出词表？}\label{sec:training}
+\tagline{本节目标：能够手算一次训练，并理解“合并”的对象。}
+
+\subsection{先明确规则：合并最常见的相邻 token 对}
+本课介绍\textbf{字节级 BPE}。它从 256 个单字节 token 开始，每轮统计\textbf{当前序列}的相邻 token 对，选择最高频的一对，给它一个新 ID，再替换它的所有非重叠出现位置。BPE 也可从字符等单位开始；“BPE”这个名称本身不限定初始单位。
+
+训练产物有两部分：\textbf{词表}保存“ID $\rightarrow$ 字节串”，\textbf{有序合并规则}保存“两个旧 ID $\rightarrow$ 新 ID”。词表用于解释结果，规则决定如何形成结果。
+
+\subsection{沿着同一句话，走三轮合并}
+训练文本使用官方讲义示例 \tok{the cat in the hat}，共有 18 个 ASCII 字节。下文用 \spacechar{} 显示真实空格，方括号表示一个 token，竖线仅用于分隔显示。
+\begin{lstlisting}
+[t]|[h]|[e]|[ ]|[c]|[a]|[t]|[ ]|[i]|[n]|[ ]|
+[t]|[h]|[e]|[ ]|[h]|[a]|[t]
+\end{lstlisting}
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{10mm}P{46mm}P{15mm}Y@{}}
+\toprule
+轮次 & 被选中的相邻对 & 新 ID & 结果与长度\\
+\midrule
+1 & $(116,104)$：\tok{t}+\tok{h} & 256 & 新片段 \tok{th}；$18\rightarrow16$\\
+2 & $(256,101)$：\tok{th}+\tok{e} & 257 & 新片段 \tok{the}；$16\rightarrow14$\\
+3 & $(257,32)$：\tok{the}+\spacechar & 258 & 新片段 \tok{the}\spacechar；$14\rightarrow12$\\
+\bottomrule
+\end{tabularx}
+
+每轮被选中的对都出现两次，且这两处互不重叠，因此每轮减少 2 个 token。最终序列为：
+\begin{lstlisting}
+[the ]|[c]|[a]|[t]|[ ]|[i]|[n]|[ ]|[the ]|[h]|[a]|[t]
+IDs: [258,99,97,116,32,105,110,32,258,104,97,116]
+\end{lstlisting}
+压缩比为 $18/12=1.5$；增加三个 token 后，词表大小为 $256+3=259$，原有 token 仍保留。
+
+\subsection{手算时最容易漏掉的细节}
+\begin{itemize}
+\item 第二轮统计的是第一轮替换后的 token 序列，因此能形成 \tok{th}+\tok{e}；不是反复统计最初的字符对。
+\item 最高频可能并列。本例沿用讲义玩具程序“先遇到者优先”的顺序；不同的并列规则可能得到不同合并路径，作业须以手册为准。
+\item 配对计数与替换次数可能不同。\tok{aaaaa} 中相邻 \tok{aa} 有 4 个窗口，但一次从左到右非重叠替换得到 \tok{[aa][aa][a]}，只有 2 次合并。
+\end{itemize}
+
+\nextpage
+\section{把训练结果用起来：编码与解码分别怎么做？}\label{sec:encoding}
+\tagline{本节目标：分清学习规则与应用规则；能够解释新文本如何处理。}
+
+\subsection{训练完成后，编码器不再学习新规则}
+将上一节保存的词表与规则固定下来，对新文本 \tok{the quick brown fox} 编码。先转成 19 个 UTF-8 字节，再按已学的合并顺序应用规则：
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{21mm}Y P{14mm}@{}}
+\toprule
+阶段 & 序列前部的变化（后部保持单字节） & 长度\\
+\midrule
+初始 & \tok{[t][h][e][ ][q][u][i][c][k]...} & 19\\
+合并规则 1 & \tok{[th][e][ ][q][u][i][c][k]...} & 18\\
+合并规则 2 & \tok{[the][ ][q][u][i][c][k]...} & 17\\
+合并规则 3 & \tok{[the ][q][u][i][c][k]...} & 16\\
+\bottomrule
+\end{tabularx}
+
+最终得到：
+\begin{lstlisting}
+[the ]|[q]|[u]|[i]|[c]|[k]|[ ]|[b]|[r]|[o]|[w]|
+[n]|[ ]|[f]|[o]|[x]
+\end{lstlisting}
+本例中的“新词”不需要加入词表，也不必整体替换为未知词标记。已学过的 \tok{the}\spacechar{} 得到压缩，其他内容仍可由基础字节 token 表示。
+
+\focus{训练阶段：根据语料统计学习词表与规则。\\
+编码阶段：对新文本应用固定规则，不重新统计“这句话里最常见的对”。}
+
+\subsection{为什么不能只看词表，随意选择最长片段？}
+BPE 的编码受\textbf{合并规则的优先级}约束。本课的简化实现按学习顺序遍历规则；较高效的实现可反复选取当前可用的、优先级最高的相邻对来合并。
+
+因此，保存结果时要保存合并顺序，不能只保存一组无序规则，也不能把一般 BPE 简化成“总是从左到右取词表中的最长字符串”。
+
+\subsection{解码：先拼字节，再解释为文字}
+\[
+\text{ID 序列}
+\xrightarrow{\text{查词表}}
+\text{字节片段列表}
+\xrightarrow{\text{拼接}}
+\text{完整字节串}
+\xrightarrow{\text{UTF-8 解码}}
+\text{字符串}
+\]
+例如 ID 258 对应字节串 \tok{b"the "}。把它与后面的字节片段拼接，就恢复 \tok{the quick brown fox}。
+
+\textbf{重要边界：}一个 token 的字节片段不一定单独构成合法 UTF-8 字符。应先拼接整段字节，再解码。对于合法文本经编码得到的序列，能够还原；任意 ID 拼接出的字节串则不保证是合法 UTF-8。
+
+\nextpage
+\section{从课堂玩具到实用分词器，还要补上什么？}\label{sec:practice}
+\tagline{本节目标：知道基础算法的边界，避免把演示实现当作完整工业实现。}
+
+\subsection{预分词：先规定哪些边界不能跨越}
+预分词（pre-tokenization）先用规则把文本分成片段，之后 BPE 在各片段内进行。它限制可合并的位置，也影响最终结果；它不等于已经把每个完整单词确定为一个 token。
+
+例如：若一个玩具预分词规则严格把单词与空格分开，那么 BPE 就不能学到跨越该边界的 \tok{the}\spacechar。第 \ref{sec:training} 节的课堂玩具示例没有这一限制；不能把它的输出直接当作所有实际分词器的输出。
+
+\subsection{特殊 token：为结构保留明确标记}
+普通文本之外，系统可能需要文档结束等特殊标记，例如 \tok{<|endoftext|>}。它们通常有专门 ID，并在预处理时被识别和保护，不应像普通字节片段那样任意拆合。
+
+如果文本中出现看起来像特殊标记的字样，需要由分词器接口约定它表示普通文本还是结构标记。具体策略属于实现规范，不能仅凭字面外观推断。
+
+\subsection{性能：规则相同，实现效率可以差很多}
+每次编码都遍历全部合并规则，是课堂中便于理解的做法。实际实现应避免大量无关扫描，重点关注当前出现的相邻对，并使用合适的数据结构更新状态。
+
+第一课应优先掌握正确性：规则有顺序、替换不重叠、边界明确、字节可还原。高效训练与编码是进一步的工程工作；这里不展开完整作业实现。
+
+\subsection{数据分布：词表也是从语料中学来的}
+BPE 统计的是片段频率，不理解语言学意义。训练语料里常见的语言、领域和格式，往往更容易被较少 token 表达；较少出现的内容可能被拆得更细。
+
+这会影响固定上下文窗口里能放进多少文本。例如“几千 token 的窗口”不等于固定字数，也不能套用一个对所有语言、代码和数字都成立的字符换算率。
+
+\focus{分词器是一种表示与计算分配方案。它会影响效率，也会改变模型观察文本的方式；BPE 是实用启发式，并不保证找到最优切分。}
+第一课还提出直接从字节学习表示的方向。复习时知道其动机即可：希望减少独立分词步骤，同时保留有效的分块和计算分配能力。它不是本课要求实现的内容。
+
+\nextpage
+\section{一页速查：把本课压回一条主线}\label{sec:review}
+\tagline{快速复习时先读这一页；遇到无法解释的环节，再回到对应章节。}
+
+\subsection{用六句话重建本课}
+\begin{enumerate}
+\item CS336 关心在给定资源下构建更好的模型，因此表示与效率必须一起考虑。
+\item 模型处理的是 token 序列；分词器负责字符串与整数序列之间的转换，嵌入表负责 ID 到向量的映射。
+\item 纯字节词表小但序列长，整词序列短但词表与未知词问题突出，广覆盖字符级也有长尾与规模成本。
+\item 字节级 BPE 从 256 个基础 token 开始，反复合并当前最高频的相邻 token 对，保存词表和合并顺序。
+\item 编码对新文本应用既有规则；解码查出字节片段、拼接后再做 UTF-8 解码。
+\item 实用分词器还需要预分词、特殊 token 处理与性能优化，并受到训练语料分布影响。
+\end{enumerate}
+
+\subsection{四个数字与一个例子}
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{43mm}Y@{}}
+\toprule
+记忆点 & 对应含义\\
+\midrule
+256 & 不含特殊 token 时，基础字节词表的大小。\\
+$r=B/T$ & 每 token 对应的 UTF-8 字节数；同一文本下越大越紧凑。\\
+$Vd$ & 嵌入表参数量；词表变大并非没有代价。\\
+$T^2$ & 标准稠密自注意力核心计算中的序列长度项。\\
+\texttt{th} $\to$ \texttt{the} $\to$ \texttt{the}\spacechar &
+讲义三次合并：训练文本从 18 个字节 token 变成 12 个 token。\\
+\bottomrule
+\end{tabularx}
+
+\subsection{易错点：看到这些说法，要能立即纠正}
+\begin{itemize}
+\item \textbf{“一个 token 就是一个单词。”} token 可以是单词、子片段、空格、标点或部分字符字节。
+\item \textbf{“每来一句话，都重新训练 BPE。”} 编码使用固定规则；训练与使用阶段分开。
+\item \textbf{“BPE 每轮选最长片段。”} 训练选最高频相邻对；编码遵守已学合并优先级。
+\item \textbf{“每个 token 单独 UTF-8 解码就好。”} 片段可能不是完整字符，应先拼字节。
+\item \textbf{“词表越大就越好。”} 词表参数、输出计算与稀有片段学习都有成本。
+\item \textbf{“不同分词器的困惑度可以直接比较。”} token 单位不同，按 token 平均的损失与困惑度尺度也不同，需统一比较口径。
+\end{itemize}
+\tagline{最后一条为补充提醒：本课只需知道评价指标依赖表示单位，具体评估方法将在后续课程展开。}
+
+\nextpage
+\section{自测：合上前文，检查自己是否真的理解}\label{sec:quiz}
+\tagline{建议先独立作答，再看第 \ref{sec:answers} 节。能用自己的话解释，比背术语更有用。}
+
+\subsection{概念题：检查因果关系}
+\begin{enumerate}[label=\textbf{Q\arabic*.}]
+\item \textbf{课程主线。}为什么第一课讲分词时，要反复讨论计算预算？请说出“分词选择影响训练成本”的一条具体链路。
+\item \textbf{表示层次。}字符“你”的码点是 20320，UTF-8 字节是 $[228,189,160]$。纯字节分词器得到几个 token？BPE 一定也得到同样数量吗？
+\item \textbf{算法动机。}纯字节分词器既能还原文本，又只有 256 个基础 token，为什么还要学习 BPE？
+\item \textbf{阶段区分。}假设新文本中 \tok{xy} 出现很多次，但训练时没有对应合并规则。编码时应不应该临时给 \tok{xy} 分配一个新 token？为什么？
+\end{enumerate}
+
+\subsection{手算题：检查操作是否准确}
+\begin{enumerate}[label=\textbf{Q\arabic*.},start=5]
+\item \textbf{合并与压缩比。}从 18 个字节开始，依次合并 \tok{t+h}、\tok{th+e}、\tok{the+空格}；每轮被选对有两个非重叠出现位置。最终有几个 token？压缩比与词表大小分别是多少？
+\item \textbf{重叠替换。}在序列 \tok{[a][a][a][a][a]} 中，\tok{(a,a)} 有几个相邻窗口？把每对合并为 \tok{A}，一次从左到右非重叠替换的结果是什么？
+\item \textbf{解码顺序。}词表中的三个 token 分别存放单字节 228、189、160。为什么不能要求三个 token 都能各自解码成一个汉字？正确流程是什么？
+\end{enumerate}
+
+\subsection{迁移题：检查是否会判断取舍}
+\begin{enumerate}[label=\textbf{Q\arabic*.},start=8]
+\item \textbf{成本判断。}某次扩大词表后，同一文本的 token 数从 1000 减至 500。标准稠密自注意力中的 $T^2$ 项如何变化？为什么不能由此断言整个训练快四倍？
+\item \textbf{边界判断。}如果预分词把单词与空格严格分开，第 \ref{sec:training} 节的 token \tok{the}\spacechar{} 还能通过片段内 BPE 学出来吗？这说明分词结果由哪些部分共同决定？
+\end{enumerate}
+
+\focus{掌握标准：能独立讲清“为什么需要 BPE”，手算三轮合并，并分清训练、编码和解码。若这三点还模糊，优先重读第 \ref{sec:tradeoff}--\ref{sec:encoding} 节。}
+\tagline{延伸观察：选一段英文、一段中文和一段代码，用同一分词器观察切分。记录空格、数字、标点和罕见片段的差异；不要把观察到的个例当成所有分词器的通则。}
+
+\nextpage
+\section{参考答案与资料来源}\label{sec:answers}
+\tagline{答案用于核对关键点，不要求逐字背诵。}
+
+\subsection{参考答案}
+\begin{enumerate}[label=\textbf{A\arabic*.},itemsep=0.45em]
+\item 分词改变序列长度，进而改变注意力等计算成本与固定窗口可容纳的文本量；在固定预算下，会影响能处理多少内容。词表增大也有额外成本。
+\item 纯字节分词器输出 3 个 token。BPE 的数量取决于学到的合并规则，可能保留 3 个，也可能合成更少 token。
+\item 纯字节序列较长。BPE 为高频字节片段提供更紧凑的表示，同时保留基础字节作为兜底。
+\item 不应该。编码阶段必须使用已固定的词表和规则；模型也只为既定词表配置了嵌入与输出，不能临时增加一个陌生 ID。
+\item 最终 $18-2-2-2=12$ 个 token；$r=18/12=1.5$；词表有 $256+3=259$ 项，不含额外特殊 token。
+\item 有 4 个相邻窗口，但只能非重叠地替换两对。结果是 \tok{[A][A][a]}，还剩 3 个 token。
+\item 三个单字节只是同一个 UTF-8 字符的组成部分，各自并非完整字符。先拼接为 $[228,189,160]$，再解码为“你”。
+\item $500^2/1000^2=1/4$，该项变为原来的四分之一。整体还受其他层计算、词表投影、内存访问、实现效率等因素影响。
+\item 不能跨该边界学出来。最终结果由基础单位、训练语料、预分词规则、合并顺序及特殊 token 约定等共同决定。
+\end{enumerate}
+
+\subsection{阅读范围与来源}
+\small
+本资料依据 \textbf{Spring 2026 第 1 课官方可执行讲义}重新组织，制作时已对照讲义与示例核对记录。是复习笔记，不是录像逐字稿；未声称观看了完整录像或逐篇精读了所有引用论文。
+
+下一 token 概率公式、ID 与嵌入的关系、成本量级说明以及自测题属于为入门补充的解释。BPE 手算采用官方讲义的玩具示例与并列处理顺序，不替代当前作业手册的详细规范。
+
+\begin{itemize}[itemsep=0.2em]
+\item \href{https://cs336.stanford.edu/}{官方课程主页与 Schedule}：课程版本、课次与主题。
+\item \href{https://github.com/stanford-cs336/lectures/blob/main/lecture_01.py}{第 1 课讲义源码}：动机、五模块总览、分词比较与 BPE 演示。
+\item \href{https://cs336.stanford.edu/lectures/?trace=lecture_01}{在线可执行讲义}：用于回到课堂结构与代码示例。
+\item \href{https://github.com/stanford-cs336/lectures}{官方讲义仓库}；\href{https://github.com/stanford-cs336/assignment1-basics}{Assignment 1 仓库}：进一步学习的入口。
+\end{itemize}
+公开主分支可能更新。原始资料可通过以上官方链接访问；本笔记整理日期为 2026 年 10 月 23 日。
+\normalsize
+\end{document}
