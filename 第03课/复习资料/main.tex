@@ -1,0 +1,673 @@
+% !TeX program = xelatex
+% CS336 Spring 2026 / Lecture 03 / Personal review notes
+% Self-contained source. Compile twice with XeLaTeX for cross-references.
+\documentclass[UTF8,fontset=fandol,zihao=-4,a4paper]{ctexart}
+\usepackage[margin=22mm,headheight=16pt,headsep=7mm,footskip=11mm]{geometry}
+\usepackage{amsmath,amssymb,booktabs,tabularx,array,xcolor,enumitem,fancyhdr}
+\usepackage[T1]{fontenc}
+\usepackage{textcomp,listings}
+\usepackage[unicode,colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black]{hyperref}
+\definecolor{accent}{HTML}{205F99}
+\definecolor{muted}{HTML}{536170}
+\definecolor{soft}{HTML}{F2F6FA}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.35em}
+\linespread{1.13}
+\setlist[itemize]{leftmargin=1.7em,itemsep=0.25em,topsep=0.35em}
+\setlist[enumerate]{leftmargin=2em,itemsep=0.35em,topsep=0.35em}
+\setlength{\emergencystretch}{2em}
+\renewcommand{\arraystretch}{1.3}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\ctexset{
+ section={format=\Large\bfseries\color{accent},beforeskip=0.7em,afterskip=0.45em},
+ subsection={format=\normalsize\bfseries,beforeskip=0.65em,afterskip=0.25em}
+}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{muted}CS336 · 第 03 课}
+\fancyhead[R]{\small\color{muted}架构与超参数}
+\fancyfoot[L]{\footnotesize\color{muted}Spring 2026 · 个人复习资料}
+\fancyfoot[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.35pt}
+\lstset{basicstyle=\ttfamily\small,backgroundcolor=\color{soft},
+ frame=single,rulecolor=\color{accent!20},columns=fullflexible,
+ keepspaces=true,breaklines=true,showstringspaces=false,
+ xleftmargin=0.6em,xrightmargin=0.6em,aboveskip=0.65em,belowskip=0.65em}
+\newcommand{\focus}[1]{\begin{quote}\small\color{accent}\bfseries #1\end{quote}}
+\newcommand{\tagline}[1]{\noindent{\small\color{muted}#1}\par}
+\newcommand{\tok}[1]{\texttt{#1}}
+\newcommand{\spacechar}{\textvisiblespace}
+\newcommand{\nextpage}{\clearpage}
+\hypersetup{pdftitle={CS336 第03课复习：架构与超参数},pdfauthor={个人学习笔记},linktoc=all}
+\begin{document}
+
+\begin{center}
+{\small\color{muted}STANFORD CS336 · LANGUAGE MODELING FROM SCRATCH}\\[0.55em]
+{\LARGE\bfseries 第 03 课复习资料}\\[0.3em]
+{\large 架构与超参数}
+\end{center}
+
+\setcounter{tocdepth}{1}
+\tableofcontents
+\clearpage
+
+\tagline{阅读主线：搭起预测链路 $\rightarrow$ 稳住残差与特征变换 $\rightarrow$ 编入位置 $\rightarrow$ 分配模型尺寸 $\rightarrow$ 控制推理成本 $\rightarrow$ 稳定训练。}
+\section{先定位：怎样选出值得训练的 Transformer？}\label{sec:overview}
+
+\subsection{接上前两课：表示、资源之后，轮到结构}
+第一课把文本变成 token，第二课学会计算张量、FLOPs 和显存。本课继续追问：有了这些积木，应该怎样连接、各做多大，才能把预算用在有效且稳定的学习上？
+
+\focus{本课的核心问题：给定数据、训练预算和推理需求，怎样选择 Transformer 的结构与超参数，并判断一个改动是否值得？}
+课件通过大量模型和消融实验归纳经验。复习时应记住\textbf{选择背后的机制、成本和证据}，而不是记住每个模型的配置表。某个方案被广泛采用，是一个有用的起点；要确认它适合自己的任务，仍需控制变量的实验。
+
+\subsection{先认清完整链路，再看局部变化}
+本笔记以自回归、仅解码器语言模型为主，原始 Transformer 的编码器--解码器结构用作对照。整体计算是：
+\[
+\text{token ID}\ \longrightarrow\ \text{嵌入向量}
+\ \longrightarrow\ L\text{ 个 Transformer 块}
+\]
+\[
+\longrightarrow\ \text{最终归一化}\ \longrightarrow\ \text{词表 logits}
+\ \longrightarrow\ \text{下一 token 概率}.
+\]
+每个块有两个核心子层：\textbf{注意力}让不同位置交换信息；\textbf{FFN / MLP}对每个位置分别进行特征变换。残差连接把子层输出加回原表示。FFN 的参数在位置之间共享，但它本身不混合不同位置。
+
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{27mm}Y@{}}
+\toprule
+设计问题 & 本课的回答路径\\
+\midrule
+深层信号 & 比较 Pre-norm、Post-norm 与分支归一化。\\
+特征变换 & 比较 LayerNorm / RMSNorm、普通 FFN / 门控 FFN。\\
+顺序与位置 & 从加法位置编码走到旋转 Q、K 的 RoPE。\\
+尺寸与预算 & 联合选择宽度、深度、FFN、头维度和词表。\\
+生成成本 & 用 KV cache、GQA / MQA 和局部注意力减少搬运。\\
+训练稳定性 & 结合优化设置、z-loss、QK-norm 与 soft-capping。\\
+\bottomrule
+\end{tabularx}
+
+\tagline{复习路线：第 \ref{sec:blocks}--\ref{sec:stability} 节沿同一模型逐步展开；第 \ref{sec:review} 节是一页速查，第 \ref{sec:quiz} 节是自测。}
+
+\nextpage
+\subsection{贯穿例子：一个可以手算的小型模型}
+\tagline{以下数字用于理解形状与成本，不是实际训练推荐配置。所有线性层无偏置，各层参数独立。}
+固定 batch 大小 $B=2$、当前序列长度 $n=4$、词表大小 $V=64$、模型宽度 $d=24$、层数 $L=2$。初始采用 $h_q=h_{kv}=6$ 个头，每头维度 $d_h=4$；SwiGLU 中间宽度 $m=64$。后面只在明确说明时改变这些设置。
+
+令 $X\in\mathbb{R}^{B\times n\times d}$ 为某一层输入。现代串行 Pre-norm 块可写成
+\[
+U=X+\operatorname{Attn}(\operatorname{Norm}_1(X)),\qquad
+Y=U+\operatorname{FFN}(\operatorname{Norm}_2(U)).
+\]
+两次相加两侧的 shape 都必须是 $(B,n,d)$。归一化、注意力和 FFN 的内部宽度可以不同，但输出要回到残差流的宽度 $d$。
+
+\subsection{先把普通多头注意力展开一次}
+由归一化后的输入分别投影出 $Q,K,V_{\!a}$，这里用 $V_{\!a}$ 表示 value 张量，以区别词表大小 $V$。本例三个投影均为 $24\times24$，然后拆成六个头：
+\[
+(2,4,24)\ \longrightarrow\ (2,6,4,4)
+\quad\text{轴顺序为 batch、head、position、feature。}
+\]
+对每个头，先按位置旋转 $Q,K$，得到 $\widetilde Q,\widetilde K$；再计算
+\[
+S=\frac{\widetilde Q\widetilde K^{\mathsf T}}{\sqrt{d_h}}+M,
+\qquad A=\operatorname{softmax}_{\text{key position}}(S),
+\qquad H=A V_{\!a}.
+\]
+$S,A$ 的 shape 为 $(2,6,4,4)$；最后两个轴是 query 位置和 key 位置，\textbf{不是两个特征轴}。因果掩码 $M_{ij}=0$ 当 $j\le i$，否则为 $-\infty$，防止当前位置看到未来。拼接六个 $H$ 后，经输出投影 $W_O$ 回到 $(2,4,24)$。
+
+\subsection{训练并行，为何生成仍有先后？}
+训练时已知整段真实文本，可以一次计算所有位置，但每个位置仍受因果掩码约束。位置 $i$ 的 logits 用来预测 $x_{i+1}$；输入和标签要错开一位。
+
+普通逐 token 生成时，下一个输入取决于刚生成的结果，所以不同生成步之间存在依赖。第 \ref{sec:attention} 节将看到：\textbf{KV cache 省去旧位置的重复投影，却没有消除新 query 对历史 K、V 的读取。}
+
+\focus{先记住主干：同一个 $(B,n,d)$ 残差流，依次接收注意力的跨位置信息和 FFN 的逐位置特征变换。后面的设计都在改变这条链路的某一部分。}
+
+\nextpage
+\section{搭好主干：归一化、门控与残差连接}\label{sec:blocks}
+\tagline{本节目标：分清归一化“放在哪里”和“怎样计算”，再理解 FFN 为什么多出一个门。}
+
+\subsection{Pre-norm 与 Post-norm：先看加号在哪里}
+用 $F$ 代表一个注意力或 FFN 子层，$N$ 代表归一化。忽略 dropout 后：
+\[
+\begin{aligned}
+\text{Post-norm:}\quad &y=N(x+F(x)),\\
+\text{Pre-norm:}\quad &y=x+F(N(x)).
+\end{aligned}
+\]
+Post-norm 把相加后的整条残差流再归一化；Pre-norm 把归一化放进分支，保留 $x\to y$ 的直接通路。为理解反向传播，可写出局部雅可比：
+\[
+J_{\text{pre}}=I+J_FJ_N,\qquad
+J_{\text{post}}=J_N(I+J_F).
+\]
+前者有显式的恒等项，后者的直接通路也经过归一化。这说明了 Pre-norm 为什么有利于深层信号传播，\textbf{不等于证明它永不梯度爆炸或总有更低损失}。
+
+Xiong 等和 Nguyen、Salazar 的研究观察到归一化位置会影响初始化梯度、梯度尖峰及学习率选择。部分实验能去掉 warmup；迁移到大模型时，更稳妥的结论是\textbf{Pre-norm 提供了较好的稳定性起点}，而不是一律取消 warmup。
+
+\subsection{分支末尾也能归一化：别只看“post”这个词}
+如果归一化作用于子层输出、但位于残差相加之前，则是
+\[
+y=x+N(F(x)).
+\]
+这仍然保留未经归一化的残差直通路径，与 $N(x+F(x))$ 不同。如果分支两端都归一化，则可写成
+\[
+y=x+N_{\mathrm{out}}\!\left(F(N_{\mathrm{in}}(x))\right).
+\]
+课件用 OLMo 2、Gemma 2 等说明这些变体。判断结构时应追踪\textbf{归一化在相加之前还是之后}，不要仅凭模型说明中的 Pre / Post 命名猜测。典型 Pre-norm 模型在所有块之后还会放一个最终归一化。
+
+\subsection{第二个独立问题：LayerNorm 还是 RMSNorm？}
+前面讨论的是位置；下一页讨论归一化本身的函数。\textbf{Pre-norm 可以搭配 LayerNorm，也可以搭配 RMSNorm。}把二者当成互斥方案，会混淆两个独立的设计维度。
+
+\focus{保留残差直通路径是结构上的考虑；归一化统计量、精度和算子实现则决定每次归一化的行为与成本。}
+
+\nextpage
+\subsection{把两个归一化公式写完整}
+对单个 token 的 $d$ 维向量 $x$，统计量沿\textbf{特征轴}计算，不跨 batch 或序列位置：
+\[
+\mu=\frac1d\sum_{i=1}^{d}x_i,\qquad
+\sigma^2=\frac1d\sum_{i=1}^{d}(x_i-\mu)^2.
+\]
+\[
+\operatorname{LayerNorm}(x)_i
+=\gamma_i\frac{x_i-\mu}{\sqrt{\sigma^2+\epsilon}}+\beta_i,
+\qquad
+\operatorname{RMSNorm}(x)_i
+=\gamma_i\frac{x_i}{\sqrt{\frac1d\sum_jx_j^2+\epsilon}}.
+\]
+$\gamma$ 是可学习缩放，$\beta$ 是偏置，$\epsilon$ 用于数值稳定。现代常用的无偏置 RMSNorm 不减均值、不加 $\beta$；LayerNorm 也可以配置成无偏置。
+
+\textbf{注意口径：}RMS 是均方根，不能直接写成 $\|x\|_2$。忽略 $\epsilon$ 时，$\operatorname{RMS}(x)=\|x\|_2/\sqrt d$。课件第 14 页的简写容易漏掉这个因子，实际实现应保留平均。
+
+\subsection{一个两维切片，立即看出差异}
+为便于手算，取独立的小例子 $x=(3,4)$，令 $\gamma=(1,1)$、$\beta=0$，暂忽略 $\epsilon$。
+\[
+\operatorname{LN}(x)=(-1,1),\qquad
+\operatorname{RMSNorm}(x)=\frac{(3,4)}{\sqrt{12.5}}
+\approx(0.8485,1.1314).
+\]
+LN 的归一化部分均值为零；RMSNorm 的输出不必均值为零。LN 对所有坐标同时加常数有不变性；RMSNorm 通常没有。二者都针对尺度，忽略 $\epsilon$ 时对正的整体倍数具有相应不变性。
+
+\subsection{少算一点，为什么可能快不少？}
+这正好接上第二课：\textbf{FLOPs 占比不等于时间占比}。归一化涉及归约、读写激活和内核启动，即使 FLOPs 很少，也可能受到带宽限制。RMSNorm 减少均值相关计算，给高效实现提供机会；收益取决于形状、融合方式和硬件。
+
+课件引用的一个 BERT 编码器层测量中，统计归一化约占 $0.17\%$ 的 FLOPs，却占 $25.5\%$ 的时间。这是\textbf{特定实验}，用于说明瓶颈差异，不能当成所有大模型的固定比例。
+
+\subsection{去掉 bias：省的不只是几个参数}
+线性层 $xW+b$ 中，矩阵有 $O(d^2)$ 参数，偏置通常只有 $O(d)$。去掉偏置能简化计算与搬运，一些模型也报告稳定性收益；但不能据此声称总显存大幅降低。应结合实际实现测时间，再看质量是否保持。
+
+\nextpage
+\subsection{从普通 FFN 到 SwiGLU：多一条投影，再逐元素相乘}
+用 $m$ 表示 FFN 的中间宽度。普通无偏置 FFN 为
+\[
+\operatorname{FFN}(x)=\phi(xW_1)W_2,
+\qquad W_1\in\mathbb{R}^{d\times m},\quad W_2\in\mathbb{R}^{m\times d}.
+\]
+ReLU 是 $\max(0,z)$；GELU 是 $z\Phi(z)$，其中 $\Phi$ 是标准正态分布函数。门控版本先做两条投影，再把对应坐标相乘：
+\[
+\operatorname{SwiGLU}(x)
+=\bigl[\operatorname{SiLU}(xW_g)\odot(xW_u)\bigr]W_d,
+\qquad \operatorname{SiLU}(z)=z\,\operatorname{sigmoid}(z).
+\]
+$W_g,W_u\in\mathbb{R}^{d\times m}$，$W_d\in\mathbb{R}^{m\times d}$。这里的“门”是内容相关的特征调制，\textbf{不是在 token 之间做注意力，也不是 0/1 开关}。用 GELU 或 ReLU 替换 SiLU，就得到 GeGLU 或 ReGLU。
+
+本例中，两条投影都把 $(2,4,24)$ 变成 $(2,4,64)$，相乘后仍是 $(2,4,64)$，再映射回 $(2,4,24)$。普通 FFN 有 $2dm$ 个权重，门控 FFN 有 $3dm$ 个。
+\[
+2d(4d)=8d^2=3d\left(\frac83d\right).
+\]
+因此从普通 FFN 的 $m=4d$ 换成门控 FFN 时，把宽度乘 $2/3$，能近似保持参数和主要矩阵乘法预算。本例 $m:96\to64$，两者都是 $4608$ 个权重。保持 $m=96$ 不变则会多出 $50\%$ 的 FFN 权重，不能称为同预算比较。
+
+\subsection{串行与并行块：FFN 是否读取注意力的新结果？}
+串行结构是前面的 $U=X+\operatorname{Attn}(N_1(X))$，再计算 $Y=U+\operatorname{FFN}(N_2(U))$。并行变体可写成
+\[
+Y=X+\operatorname{Attn}(N(X))+\operatorname{FFN}(N(X)).
+\]
+两条分支读取同一输入，可能共享归一化并融合输入投影，减少依赖和搬运。代价是 FFN 不再直接读取本块注意力更新后的 $U$。这是\textbf{模型结构变化}；不能把串行模型随意改成并行而期待输出相同，也不意味着必须放到两张 GPU 上。
+
+\focus{实践起点：串行残差块、分支内归一化、RMSNorm、无偏置和 SwiGLU 是一个合理基线。门控收益有实验支持，但具体吞吐和质量仍需在同预算下比较。}
+
+\nextpage
+\section{编入顺序：RoPE 为什么能表达相对位置？}\label{sec:rope}
+\tagline{本节目标：从“把位置加进向量”走到“让 Q、K 的内积依赖位置差”。}
+
+\subsection{位置编码解决的是什么缺口？}
+普通注意力的内容打分只看到 query 和 key 向量；因果掩码规定了能看谁，却没有直接给出位置差。位置编码让模型更容易区分相同内容出现在不同顺序或距离的情形。不要把“没有显式位置编码”简单等同于“因果模型完全无法感知顺序”。
+
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{25mm}Y Y@{}}
+\toprule
+方案 & 位置如何进入计算 & 需要理解的取舍\\
+\midrule
+固定正弦 & 输入中加固定 $PE_i$。 & 可计算任意位置，但超出训练长度的效果仍需验证。\\
+绝对位置 & 输入中加可学习的 $u_i$。 & 直接表达位置，通常受训练表长及扩展方式约束。\\
+相对位置项 & 在注意力打分中加入位置差相关的偏置或向量。 & 是一类方法；T5 的桶化偏置与向量式相对编码不同。\\
+RoPE & 投影后按位置旋转 Q、K。 & 通过内积自然引入位置差，无需逐位置学习向量表。\\
+\bottomrule
+\end{tabularx}
+
+\subsection{为什么加法不直接满足目标？}
+假设先把内容向量与位置向量相加，其内积包含
+\[
+(x+PE_i)^{\mathsf T}(y+PE_j)
+=x^{\mathsf T}y+x^{\mathsf T}PE_j+PE_i^{\mathsf T}y+PE_i^{\mathsf T}PE_j.
+\]
+中间两项混合了内容和绝对位置。因此即使某些正弦项能表达位置差，整体也不会自动只依赖 $j-i$。RoPE 希望在给定内容 Q、K 后，位置的作用能整理为相对位移。
+
+\subsection{先用二维旋转理解它}
+把一个头的特征两两分组。对其中一对坐标，用旋转矩阵
+\[
+R(\alpha)=
+\begin{pmatrix}\cos\alpha&-\sin\alpha\\\sin\alpha&\cos\alpha\end{pmatrix}
+\]
+编码位置 $p$：$q'_p=R(p\theta)q_p$，$k'_p=R(p\theta)k_p$。不同坐标对使用不同频率 $\theta$；同一对的 Q、K 使用一致约定。旋转保持长度，改变方向，使位置进入后续相似度计算。
+
+\focus{RoPE 的关键不是又出现了 sin / cos，而是用它们旋转投影后的 Q、K；与把 sin / cos 向量直接加到输入上的做法不同。}
+
+\nextpage
+\subsection{核心推导：绝对位置如何消掉？}
+\tagline{以下把单个头的 q、k 写成列向量；与前面的批量行向量实现只是记号不同。}
+利用 $R(\alpha)^{\mathsf T}=R(-\alpha)$ 以及旋转角相加：
+\[
+\begin{aligned}
+(R(i\theta)q_i)^{\mathsf T}(R(j\theta)k_j)
+&=q_i^{\mathsf T}R(i\theta)^{\mathsf T}R(j\theta)k_j\\
+&=q_i^{\mathsf T}R((j-i)\theta)k_j.
+\end{aligned}
+\]
+两边位置同时平移 $c$ 后，$(j+c)-(i+c)=j-i$，所以给定内容向量时该内积不变。这并不声称整个带边界、掩码和上下文的模型对任何位置移动都完全不变。
+
+对于 $d_h$ 为偶数的完整旋转，一个常见原始设置是
+\[
+\theta_r=10000^{-2r/d_h},\qquad r=0,\ldots,d_h/2-1.
+\]
+本例 $d_h=4$，两对坐标的频率分别为 $1$ 和 $0.01$。这是一个常见频率基数，\textbf{不是永远固定的超参数}；实际模型还会调整基数、缩放或只旋转部分维度。
+
+\subsection{手算与实现：无需构建大旋转矩阵}
+另取二维演示 $q=(1,0)$、$k=(1,1)$、$\theta=\pi/2$。位置 $(i,j)=(0,1)$ 时，$q'= (1,0)$、$k'=(-1,1)$，内积为 $-1$。把位置改成 $(2,3)$，得到 $q'=(-1,0)$、$k'=(1,-1)$，内积仍为 $-1$。
+
+对每一对坐标 $(a,b)$，直接算 $a\cos\alpha-b\sin\alpha$ 和 $a\sin\alpha+b\cos\alpha$ 即可。下面是成对相邻排列的示意接口，省略框架细节：
+\begin{lstlisting}
+# x is q or k: (B, heads, n, head_dim)
+# angles: (n, head_dim // 2), using true positions
+a, b = x[..., 0::2], x[..., 1::2]
+even = a * cos - b * sin
+odd  = a * sin + b * cos
+x_rotated = interleave(even, odd)
+\end{lstlisting}
+不同实现也可能把前后半段配对，使用前必须核对权重和布局约定，不能只看公式形似就互换。
+
+\subsection{落到模型时，检查三个接口}
+通常在\textbf{每层注意力的 Q、K 投影之后}应用 RoPE，value 保持原样。使用 KV cache 时，新 token 要沿用真实位置偏移，旧 key 若已旋转就不能再重复旋转。RoPE 可以计算更远位置，\textbf{不等于自动获得任意长度的可靠外推}。
+
+\nextpage
+\section{分配预算：宽度、头数、深度和词表}\label{sec:hparams}
+\tagline{本节目标：把“大家常这样设”与“形状必须这样设”分开，用参数账解释常见比例。}
+
+\subsection{FFN 宽度：先问两矩阵还是三矩阵}
+普通 FFN 的 $m\approx4d$、门控 FFN 的 $m\approx\frac83d$ 都是有用起点。实际配置会按硬件友好倍数取整，也会在容量分配上作调整。$8/3$ 来自前面的\textbf{同预算推导}，不是 SwiGLU 的数学定义。
+
+课件用 T5-11B 的 $d=1024,m=65536$ 说明 $m/d=64$ 仍能训练；但它是编码器--解码器模型中的特定选择，不能直接推广为现代仅解码器模型的最优比例。Kaplan 等的实验显示某些形状比例有较宽的有效区间，结论也依赖规模、数据和比较口径。
+
+\subsection{头数乘头维度必须等于模型宽度吗？}
+设 query 头数为 $h_q$，总注意力宽度 $a=h_qd_h$。普通 MHA 可采用
+\[
+W_Q,W_K,W_{V_a}\in\mathbb{R}^{d\times a},\qquad
+W_O\in\mathbb{R}^{a\times d}.
+\]
+只要投影与 reshape 一致，$a$ 可以不等于 $d$。\textbf{只有当你预先把投影输出固定为 $d$ 并均分成头时，才要求 $h_q\mid d$。}Q、K 的单头维度需要匹配才能做内积；本笔记为简洁也让 value 头维度相同。
+
+因此 $h_qd_h=d$ 是常见预算选择，不能当成架构定理。例如本例仍取 $d=24,h_q=6$，若把 $d_h$ 从 $4$ 改成 $8$，则 $a=48$，MHA 投影参数由 $4d^2=2304$ 增为 $4da=4608$；输出照样可以回到 $24$ 维。
+
+\subsection{把小模型的参数账合起来}
+回到原始例子 $d=24,h_q=6,d_h=4,m=64$。暂只计算普通 MHA 与 FFN 的大矩阵：
+\[
+N_{\text{attn}}=4d^2=2304,\qquad
+N_{\text{FFN}}=3dm=4608,
+\]
+\[
+N_{\text{block}}=6912=12d^2,\qquad
+N_{\text{blocks}}=L\cdot6912=13824.
+\]
+输入嵌入和输出投影\textbf{不共享}时还需 $2Vd=3072$；每块两个带缩放的 RMSNorm，加最终一个，共 $(2L+1)d=120$。总计 $17016$ 个参数。若共享输入输出权重，则总计 $15480$。这两个数字都包括归一化，不含任何 bias。
+
+\focus{“约 $12Ld^2$ 个参数”需要普通 MHA、头总宽度等于 d、匹配预算的 FFN 等条件；它不自动包含词表，也不能直接套给所有 GQA 模型。}
+
+\nextpage
+\subsection{更深还是更宽：参数相近，系统行为仍会不同}
+当每层结构比例固定且大矩阵主导参数时，$N\propto Ld^2$。若把深度翻倍，要维持同样的主干参数量，宽度约缩为 $d/\sqrt2$；这个关系是\textbf{预算近似}，不是质量相等的保证。
+
+加深增加串行依赖，单个请求不能跳过前一层去计算后一层；加宽更容易把大矩阵分到多设备，但也影响通信和单层激活。课件中 $d/L$ 常见约 $100$--$200$，同时存在明显例外。小模型、不同架构与硬件不必落在此范围。
+
+Kaplan 的损失--参数比较和 Tay 等的预训练、微调与速度实验提示：\textbf{同参数、同 FLOPs、同耗时不是同一个比较问题}。选择深宽比例时，应同时测验证质量、训练吞吐和生成延迟。
+
+\subsection{词表大小：第一课的选择，会在这里收到账单}
+扩大词表常能缩短同一文本的 token 序列，但会增大嵌入表和输出层。单张表有 $Vd$ 个权重；完整输出投影每个位置约需 $2dV$ FLOPs。共享输入输出权重能省参数，\textbf{不会消除词表 logits 的计算}。
+
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{31mm}Y@{}}
+\toprule
+词表变大后 & 需要一起考虑的变化\\
+\midrule
+序列可能变短 & 同一原始文本的注意力成本、位置数和有效上下文发生变化。\\
+每个 token 更贵 & 输出投影、softmax 与模型状态可能增大。\\
+语言覆盖改变 & 多语种、代码、数字和长尾片段的切分质量可能变化。\\
+评价单位改变 & 不同分词器的每 token 损失不能直接当作公平质量比较。\\
+\bottomrule
+\end{tabularx}
+
+课件给出的历史样本大致是：单语模型常用数万词表，多语或产品模型常用十几万至二十多万。它们是观察范围，\textbf{不是单语上限，也不是多语最低要求}。应固定原始文本或使用一致评价口径，比较最终资源与质量。
+
+\subsection{怎样从一组默认值走向自己的配置？}
+先保留可靠基线，再选真正影响目标的变量。长上下文生成受限时，先检查 KV cache 与注意力模式；小模型词表占比过高时，先检查 $Vd$；出现训练尖峰时，先检查数值与优化动态。不要在每项上同时做微小改动，最后却无法解释收益来自哪里。
+
+\tagline{承上启下：模型参数账主要随结构固定；生成时还有一份随上下文增长的 KV 缓存账。下一节从这份账出发理解注意力变体。}
+
+\nextpage
+\section{控制推理成本：KV 缓存与注意力变体}\label{sec:attention}
+\tagline{本节目标：分别看清“共享多少组 K、V”和“每个 query 看哪些位置”两种节省。}
+
+\subsection{KV cache：哪些结果值得跨步保留？}
+因果生成时，已有 token 在各层的 K、V 不随新 token 到来而改变，可以缓存。每一步只计算新 token 的投影，把新 K、V 追加进去；新 query 对缓存的历史 K 打分，再对 V 加权。旧 query 不参与未来位置的计算，因此通常无需缓存旧 Q。
+
+对 $L$ 层、$B$ 条长度为 $n$ 的序列，设 KV 头数为 $h_{kv}$，每个元素 $s$ byte，忽略对齐和管理开销：
+\[
+\boxed{M_{\text{KV}}=2LBnh_{kv}d_hs\ \text{byte}.}
+\]
+最前面的 $2$ 来自 K、V 两份。本式描述\textbf{当前驻留容量}，不是整个生成过程的累计读取量，也不是训练时为反向保存的全部激活。
+
+\subsection{MHA、MQA、GQA：query 头可以保持不变}
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{16mm}P{24mm}Y@{}}
+\toprule
+方案 & KV 头数 & 共享关系\\
+\midrule
+MHA & $h_{kv}=h_q$ & 每个 query 头有自己的一组 K、V。\\
+MQA & $h_{kv}=1$ & 所有 query 头共享一组 K、V；每组仍有 $d_h$ 个特征。\\
+GQA & $1<h_{kv}<h_q$ & query 头分组，同组共享 K、V，通常要求 $h_q$ 能被 $h_{kv}$ 整除。\\
+\bottomrule
+\end{tabularx}
+
+“MQA 只剩一个维度”的口头说法容易误导：减少的是\textbf{KV 头的数量}，不是把每个 key 变成一个标量。本例仍有六个 query 头；GQA 可令 $h_{kv}=2$，每三个 query 头共享一组 K、V。
+
+\subsection{回到同一个例子：缓存与参数分别省多少？}
+本例 $L=2,B=2,n=4,d_h=4$，缓存采用 bf16，$s=2$。同时，注意力的四类投影参数为
+\[
+N_{\text{attn}}=2d(h_qd_h)+2d(h_{kv}d_h).
+\]
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{27mm}Y Y Y@{}}
+\toprule
+项目 & MHA & GQA & MQA\\
+\midrule
+$h_q/h_{kv}$ & $6/6$ & $6/2$ & $6/1$\\
+KV 缓存 & 1536 byte & 512 byte & 256 byte\\
+每层投影权重 & 2304 & 1536 & 1344\\
+\bottomrule
+\end{tabularx}
+
+缓存按 $h_{kv}$ 成比例减少；Q 与输出投影仍在，所以注意力参数和总 FLOPs 不会按相同比例下降。GQA 是质量与效率之间的调节旋钮，效果需要训练和评估验证。
+
+\nextpage
+\subsection{为什么训练不慢，逐 token 生成却可能受带宽限制？}
+\tagline{补充推导：沿用课件及 MQA 原论文的简化模型。以下 O 记号忽略常数、dtype 字节宽度与内核细节。}
+为比较两种执行方式，暂取普通 MHA，$h=h_q=h_{kv}$、$d=hd_h$，并假设 $n\le d$。一次处理全部位置时，大量 query 可以复用投影权重与 K、V；逐步生成时，同样的历史 K、V 会被反复读取。
+
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{20mm}Y Y@{}}
+\toprule
+执行方式 & 算术操作量 & 访问元素量的简化估算\\
+\midrule
+整段处理 & $O(Bnd^2+Bn^2d)$ & $O(Bnd+Bhn^2+d^2)$\\
+逐步生成 n 次 & $O(Bnd^2+Bn^2d)$ & $O(Bn^2d+nd^2)$\\
+\bottomrule
+\end{tabularx}
+
+表中第二行是\textbf{生成 n 个位置的累计量}。单步历史长度为 $t$ 时，读 KV 约 $O(Btd)$；求和 $\sum_{t=1}^n t=O(n^2)$，就得到 $O(Bn^2d)$。每步还可能重新读取模型权重，因此出现 $O(nd^2)$。
+
+在 $n\le d$ 时，算术量可简化为 $O(Bnd^2)$。用访问量除以它，得到“每次算术操作需要访问多少元素”的量级：
+\[
+\begin{aligned}
+\text{整段：}\quad& O\!\left(\frac1d+\frac{n}{d\,d_h}+\frac1{Bn}\right),\\
+\text{增量 MHA：}\quad& O\!\left(\frac nd+\frac1B\right),\\
+\text{增量 MQA：}\quad& O\!\left(\frac1d+\frac{n}{dh}+\frac1B\right).
+\end{aligned}
+\]
+课件将第一式进一步用 $O(1/d_h+1/(Bn))$ 表示上界。\textbf{算术强度是它的倒数方向}；换算成 FLOPs/byte 还需乘上具体计数常数与 dtype 宽度。不能直接把这个量级当成精确硬件指标。
+
+\subsection{从公式读出两条不同的优化方向}
+增大 batch 能改善权重搬运项 $1/B$；减少 KV 头数能改善历史缓存搬运项。GQA 处于 MHA 与 MQA 之间：在相同简化假设下，历史项约由 $n/d$ 缩为 $nh_{kv}/(dh_q)$。
+
+这些估计假设普通物化注意力张量，并用简单的读写模型看趋势。融合内核、FlashAttention、缓存命中、并行切分都会改变实际 I/O。长序列 $n>d$ 时也不能再忽略 $Bn^2d$ 的计算。\textbf{最终判断仍要回到第二课的 roofline 与实测吞吐。}
+
+\nextpage
+\subsection{另一条轴：减少每个 query 可见的位置}
+GQA 改变的是头的共享关系；稀疏或滑动窗口注意力改变的是\textbf{连接模式}。完整因果注意力让位置 $i$ 看到 $0,\ldots,i$，总连接数约为 $n(n+1)/2$。若窗口大小 $w$ 表示含当前位置的最多 $w$ 个位置，则
+\[
+\max(0,i-w+1)\le j\le i.
+\]
+当 $w\ll n$ 时，连接数为 $O(nw)$；QK 与加权求和的计算由 $O(Bn^2d)$ 变为 $O(Bnwd)$。在精确支持该窗口的实现中，局部层的 KV 缓存也只需保留最近 $w$ 个位置。
+
+\subsection{少连边的代价：远距离信息怎样过来？}
+本例 $n=4$，完整因果图有 $1+2+3+4=10$ 条允许边；若 $w=2$，则有 $1+2+2+2=7$ 条。位置 3 无法在这一层直接读取位置 0，但可以通过多层局部信息传递间接接收更远信息。
+
+每层固定窗口最多扩展 $w-1$ 个过去位置；$L$ 层后的理论感受野约为 $1+L(w-1)$。\textbf{可达不等于能够高保真保留信息}，远距离检索仍可能受到影响。稀疏 Transformer 还可以设计跨步、固定全局位置等连接，而不只有相邻窗口。
+
+\subsection{混合局部层与全局层}
+课件展示了把若干局部层与一个完整注意力层交替堆叠的做法：局部层以较低成本处理邻域，全局层提供直接的远距离通路。不同模型的层比例、RoPE 与 NoPE 配置不同，不存在统一的固定配方。
+
+设全局层数为 $L_g$、局部层数为 $L_\ell$，各层使用相同 KV 头数，则简化缓存为
+\[
+M_{\text{KV}}\approx2Bh_{kv}d_hs
+\left[L_gn+L_\ell\min(n,w)\right].
+\]
+只要仍有全局层，缓存就不能一律截断到 $w$。同理，固定比例的全局层在渐近意义下仍保留二次注意力项；混合架构降低常数成本，不自动变成全模型线性复杂度。
+
+\subsection{两种节省可以组合，但不要混淆机制}
+GQA 可与窗口注意力一起使用；前者少存、少搬 KV 头，后者少连位置。FlashAttention 则通过计算组织减少物化与搬运，可保持完整注意力的数学连接；它不等同于稀疏注意力。课件提到的 MLA、SSM 和其他混合方案作为延伸入口，具体机制留到后续课程。
+
+\focus{选注意力方案时，先问瓶颈是权重搬运、KV 容量、历史读取还是成对计算，再决定调 batch、KV 头数、窗口或实现方式。}
+
+\nextpage
+\section{让训练稳定：优化动态与两处 softmax}\label{sec:stability}
+\tagline{本节目标：把正则化、数值实现和结构稳定性联系起来，避免只看最终损失。}
+
+\subsection{数据很多，为什么还会用 weight decay？}
+大规模预训练中，一些模型不使用 dropout，却仍使用 weight decay。数据规模大、重复轮数少，可能减少传统过拟合压力；这\textbf{不代表模型不会记忆，也不代表小数据微调可以照搬设置}。论文没有报告 dropout 时，也不能断言它必然为零。
+
+以解耦衰减的 AdamW 形式看，若 $u_t$ 是自适应梯度更新方向：
+\[
+\theta_{t+1}=(1-\eta_t\lambda)\theta_t-\eta_tu_t.
+\]
+衰减量与学习率 $\eta_t$、衰减系数 $\lambda$ 和当前权重共同有关。关于 weight decay 的研究在所测试的近单遍语言模型训练中，观察到它可以改善优化动态和低精度训练稳定性；作用不必表现为缩小训练--验证差距。\textbf{这不是所有任务中“正则化无用”的定理。}
+
+因此应把 dropout、weight decay、学习率日程和参数分组一起看；不能只因某个模型用了 $0.1$，就给所有参数、所有训练阶段照抄相同衰减。
+
+\subsection{先把 softmax 本身算稳定}
+模型有两处重要 softmax：注意力位置分布与输出词表分布。给定一行有限 logits $z$，设 $c=\max_i z_i$，使用
+\[
+\operatorname{softmax}(z)_i=\frac{e^{z_i-c}}{\sum_j e^{z_j-c}},\qquad
+\log Z=c+\log\sum_j e^{z_j-c}.
+\]
+例如 $(1000,1001)$ 直接取指数会有溢出风险，减去 1001 后可得到约 $(0.2689,0.7311)$。训练交叉熵宜用稳定的 log-softmax / logsumexp。还要保证每一有效 query 至少有一个未屏蔽 key，防止全 $-\infty$ 行导致无效运算。
+
+\subsection{输出 z-loss：约束交叉熵看不到的整体漂移}
+对目标 token $y$，$\ell_{\mathrm{CE}}=-z_y+\log Z$。加上同一个常数不会改变 softmax 概率，但会改变 $\log Z$。常见 z-loss 写成
+\[
+\ell=\ell_{\mathrm{CE}}+\alpha(\log Z)^2,\qquad\alpha>0.
+\]
+它把输出 log-partition 拉向零，约束 logits 的整体偏移；\textbf{不是把每个 logit 都压到零，也不是 MoE 路由负载均衡损失}。PaLM 报告使用 $10^{-4}$，其他模型有不同设置。实现时应使用上面的原始 $\log Z$，不能漏掉减最大值时的补偿项 $c$。
+
+\nextpage
+\subsection{QK-norm：控制进入注意力 softmax 的向量}
+即使已使用 $1/\sqrt{d_h}$ 缩放，训练中的 Q、K 范数仍可能增大，导致注意力 logits 极端。QK-norm 在打分前归一化 Q、K，例如
+\[
+\widehat q_i=\operatorname{RMSNorm}(q_i),\qquad
+\widehat k_j=\operatorname{RMSNorm}(k_j),\qquad
+s_{ij}=\frac{\widehat q_i^{\mathsf T}\widehat k_j}{\sqrt{d_h}}.
+\]
+这是机制示意：实际实现需要明确归一化轴、缩放参数，以及与 RoPE 的先后关系。使用逐维可学习缩放时，归一化和旋转一般不能任意交换。\textbf{RMSNorm 也不是单位 L2 归一化}，不能直接把这个式子称为范围在 $[-1,1]$ 的余弦相似度。
+
+\subsection{Soft-capping：直接对打分做平滑限幅}
+给定正阈值 $c$，对尚未加掩码的 logits 应用
+\[
+\operatorname{softcap}(z)=c\tanh(z/c).
+\]
+小值附近近似线性，大值平滑趋近 $\pm c$。它会改变分布，并在饱和区减弱梯度；与不改变概率的“减去行最大值”不是同一件事。Gemma 2 的报告给出过注意力阈值 50、输出阈值 30，这些只是该配方的设置。
+
+\textbf{实现易错点：}因果掩码应在 soft-cap 之后应用；若把 $-\infty$ 掩码先送入 tanh，会得到有限的 $-c$，从而破坏被屏蔽位置概率严格为零的约定。具体内核还需核对 mask、缩放与 soft-cap 的执行顺序。
+
+\subsection{三个技巧各管哪里？}
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{24mm}P{30mm}Y@{}}
+\toprule
+方法 & 直接作用对象 & 不能据此保证什么\\
+\midrule
+z-loss & 输出层的 $\log Z$ & 不直接规范每层注意力 Q、K。\\
+QK-norm & 注意力的 Q、K & 不自动解决输出 logits 漂移。\\
+Soft-capping & 注意力或输出 logits & 有界分数不等于训练永不发散。\\
+\bottomrule
+\end{tabularx}
+
+\subsection{收束主线：一个可复用的实验顺序}
+先验证形状、因果掩码、标签错位、RoPE 位置和缓存一致性；再确认小规模能学习，观察训练／验证损失、梯度范数和 logits；最后在固定数据与预算下逐项比较结构。出现尖峰时同时检查数据、学习率、精度和状态恢复，不能默认全是架构问题。
+
+\focus{本课学到的不是一张永远正确的配置表，而是一套判断方式：先解释机制，再核算资源，最后用质量、吞吐和稳定性共同验证。}
+
+\nextpage
+\section{一页速查：把本课压缩成一条链}\label{sec:review}
+
+\subsection{六句话记住主线}
+\begin{enumerate}
+\item \textbf{先搭主干：}注意力混合位置，FFN 变换特征，残差流始终回到 $d$ 维。
+\item \textbf{再稳信号：}Pre-norm 保留直通路径；RMSNorm 不减均值，二者是独立选择。
+\item \textbf{然后编位置：}RoPE 旋转 Q、K，使内积中的位置作用体现为相对位移。
+\item \textbf{再分预算：}普通 FFN 常取 $4d$，门控常取 $8d/3$；头总宽度等于 $d$ 是惯例。
+\item \textbf{最后看生成：}GQA / MQA 减少 KV 头，窗口减少位置连接，瓶颈需分别核算。
+\item \textbf{训练要闭环：}优化设置与数值技巧一起检查，用质量、速度、稳定性验证改动。
+\end{enumerate}
+
+\subsection{关键公式与连续例子}
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{24mm}Y@{}}
+\toprule
+检查项 & 公式或本例结论\\
+\midrule
+Pre-norm & $y=x+F(N(x))$；区别于 $N(x+F(x))$。\\
+RMSNorm & $\gamma_i x_i/\sqrt{\frac1d\sum_jx_j^2+\epsilon}$。\\
+FFN 预算 & 普通 $2dm$，门控 $3dm$；本例 $96\to64$，均 4608 个权重。\\
+RoPE & $(R_iq)^{\mathsf T}(R_jk)=q^{\mathsf T}R_{j-i}k$。\\
+注意力权重 & $2d(h_qd_h)+2d(h_{kv}d_h)$；别漏 Q 与输出投影。\\
+小模型参数 & $d=24,L=2,V=64$：不共享词表权重时 17016。\\
+KV 缓存 & $2LBnh_{kv}d_hs$；本例 bf16：1536 / 512 / 256 byte。\\
+稳定技巧 & z-loss：$\alpha(\log Z)^2$；QK-norm：规范 Q、K；soft-cap：$c\tanh(z/c)$。\\
+\bottomrule
+\end{tabularx}
+
+\subsection{最容易混淆的地方}
+\begin{itemize}
+\item \textbf{公式与惯例：}RMS 需要取平均；$h_qd_h=d$、$m/d=8/3$ 不是普遍约束。
+\item \textbf{不同的账：}参数量、KV 容量、累计搬运量、FLOPs 和耗时不能互相替代。
+\item \textbf{相对位置与外推：}RoPE 的内积性质不保证任意长度效果，也不能重置缓存位置。
+\item \textbf{稳定实现与训练技巧：}减最大值不改变 softmax；soft-cap 改变分布，掩码应后加。
+\end{itemize}
+
+\nextpage
+\section{自测：能否脱离笔记说清楚？}\label{sec:quiz}
+\tagline{先独立作答，再看下一节。计算题沿用 $d=24,L=2,V=64,B=2,n=4,h_q=6,d_h=4$；除特别说明外，线性层无偏置。}
+
+\subsection{概念题}
+\begin{enumerate}[label=\textbf{Q\arabic*.},series=questions]
+\item 分别解释 $N(x+F(x))$、$x+F(N(x))$ 和 $x+N(F(x))$。后两种为何都保留残差直通路径？采用 RMSNorm 是否就自动意味着 Pre-norm？
+\item 普通 FFN 和 SwiGLU 分别怎样计算？SwiGLU 中额外增加的投影做什么？为什么不能把“门控”理解为让不同 token 彼此注意？
+\item 用旋转矩阵说明 RoPE 为什么能让内积中的位置作用只依赖 $j-i$。该性质为何不能直接推出模型可以可靠处理任意长文本？
+\end{enumerate}
+
+\subsection{手算题}
+\begin{enumerate}[label=\textbf{Q\arabic*.},resume=questions]
+\item 普通 FFN 取 $m=96$，SwiGLU 应取多宽才能匹配权重数量？再计算普通 MHA 与 SwiGLU 的每层大矩阵参数。包含两层、两张独立词表矩阵及五个 RMSNorm 缩放向量后，总参数是多少？
+\item bf16 KV cache 分别采用 $h_{kv}=6,2,1$ 时，全模型缓存各是多少 byte？若使用 GQA（$h_{kv}=2$），每层注意力投影参数减少到多少？为什么缓存缩成 $1/3$，注意力参数却没有缩成 $1/3$？
+\item 对输出 logits $z=(1000,1001)$，稳定地计算两个概率及 $\log Z$。若对两个 logits 都加上 7，交叉熵是否改变？z-loss 是否改变？
+\end{enumerate}
+
+\subsection{迁移题}
+\begin{enumerate}[label=\textbf{Q\arabic*.},resume=questions]
+\item 保持 $d=24,h_q=6$，把 $d_h$ 改成 8 是否合法？普通 MHA 的 $W_Q$ 与 $W_O$ 形状如何变化？总投影参数变成多少？
+\item 某模型训练吞吐不错，但 batch 为 1 的长文本生成很慢。至少指出两种可能的搬运瓶颈，以及各自的调整方向。如果把三层局部注意力与一层全局注意力交替，是否能把所有层的 KV cache 都截成窗口长度？
+\item 有人把所有 logits 减最大值后，声称已经解决训练尖峰；又对加完因果掩码的分数做 soft-cap。分别指出这两个判断的问题，并说明 z-loss、QK-norm 主要作用于哪里。
+\end{enumerate}
+
+\focus{掌握标准：能画出一个块的依赖关系，独立核算参数与缓存，并说清楚每个稳定技巧的作用对象和边界。}
+
+\nextpage
+\section{参考答案与资料来源}\label{sec:answers}
+
+\subsection{概念题参考答案}
+\textbf{A1.} 三式依次为传统 Post-norm、Pre-norm、分支输出归一化。后两式的 $x$ 都直接加到输出；第一式的整条相加结果经过 $N$。RMSNorm 描述归一化函数，不决定它在块中的位置。
+
+\textbf{A2.} 普通 FFN 是 $\phi(xW_1)W_2$；SwiGLU 是 $[\operatorname{SiLU}(xW_g)\odot xW_u]W_d$。额外投影形成逐特征调制，各位置分别计算，位置间的信息交换由注意力承担。
+
+\textbf{A3.} $R(i\theta)^{\mathsf T}R(j\theta)=R((j-i)\theta)$，故固定内容时共同平移不改变内积。训练分布、频率设置、上下文与边界仍会影响长文本效果；公式可计算不等于已学会长距离任务。
+
+\subsection{手算题参考答案}
+\textbf{A4.} 令 $3\times24\times m=2\times24\times96$，得 $m=64$。MHA 为 2304，SwiGLU 为 4608，每层大矩阵共 6912。总参数为
+\[
+2\times6912+2\times64\times24+5\times24=17016.
+\]
+\textbf{A5.} $M_{\mathrm{KV}}=2\times2\times2\times4\times h_{kv}\times4\times2$，结果依次为 1536、512、256 byte。GQA 投影为 $2\times24\times24+2\times24\times8=1536$ 个参数；Q 和输出投影没有随 KV 头数一起缩小。
+
+\textbf{A6.} 减去 1001 后，概率为 $(1/(1+e),e/(1+e))\approx(0.2689,0.7311)$；$\log Z=1001+\log(1+e^{-1})\approx1001.3133$。整体加 7 后，概率与交叉熵不变，$\log Z$ 增加 7，所以该例的 z-loss 改变。
+
+\subsection{迁移题参考答案}
+\textbf{A7.} 合法，注意力内部总宽度变成 48。$W_Q$ 为 $24\times48$，$W_O$ 为 $48\times24$；四类投影共 $4\times24\times48=4608$ 个权重，输出仍回到 24 维。
+
+\textbf{A8.} 可能受权重搬运和历史 KV 读取限制：增大 batch 可摊薄权重搬运，GQA / MQA 减少 KV 读取；若质量允许，局部注意力减少历史范围。全局层仍需完整历史缓存，不能全部截断；需要实际测量确认主要瓶颈。
+
+\textbf{A9.} 减最大值主要避免指数溢出，不消除所有优化或尺度问题。soft-cap 把掩码 $-\infty$ 变成有限 $-c$，应在限幅后再加掩码。z-loss 约束输出 $\log Z$；QK-norm 规范注意力 Q、K，二者不互相替代。
+
+\nextpage
+\subsection{官方资料与阅读范围}
+\begin{itemize}
+\item \href{https://cs336.stanford.edu/}{课程官网及 Schedule}：Spring 2026 第三课，Architectures, hyperparameters，授课教师 Tatsu Hashimoto；课程安排日期为 4 月 6 日。
+\item \href{https://github.com/stanford-cs336/lectures/blob/main/lecture_03.pdf}{第三课官方课件}：本次读取主分支的 67 页 PDF，全文提取并查看各页图表。页码对应关系如下，方便回到原资料复习。
+\end{itemize}
+
+\par\noindent\begin{tabularx}{\linewidth}{@{}P{21mm}Y P{24mm}@{}}
+\toprule
+课件页码 & 主题 & 本笔记位置\\
+\midrule
+1--9 & 现代 Transformer、模型对照与本课问题 & 第 \ref{sec:overview} 节\\
+10--19 & 归一化位置、RMSNorm、去偏置 & 第 \ref{sec:blocks} 节\\
+20--29 & 激活、门控、串行与并行 & 第 \ref{sec:blocks} 节\\
+30--35 & 位置编码与 RoPE & 第 \ref{sec:rope} 节\\
+36--47、51 & FFN、头维度、深宽比、词表 & 第 \ref{sec:hparams} 节\\
+48--50、52--56 & Dropout、衰减、数值稳定技巧 & 第 \ref{sec:stability} 节\\
+57--66 & KV cache、GQA / MQA、稀疏与混合注意力 & 第 \ref{sec:attention} 节\\
+67 & 共性、差异与总结 & 第 \ref{sec:review} 节\\
+\bottomrule
+\end{tabularx}
+
+\subsection{直接相关原始资料：机制与实验}
+以下核对与本课有关的定义、公式、实验或图表，不把所有背景论文扩展成必读综述。链接均指向原始论文入口。
+\begin{enumerate}
+\item \href{https://arxiv.org/abs/1706.03762}{Vaswani 等：Attention Is All You Need}。对应基础注意力、FFN、残差与位置编码。
+\item \href{https://arxiv.org/abs/2002.04745}{Xiong 等：On Layer Normalization in the Transformer Architecture}；\href{https://arxiv.org/abs/1910.05895}{Nguyen、Salazar：Transformers without Tears}。对应 Pre / Post-norm 的梯度与训练实验。
+\item \href{https://arxiv.org/abs/1910.07467}{Zhang、Sennrich：Root Mean Square Layer Normalization}；\href{https://arxiv.org/abs/2007.00072}{Ivanov 等：Data Movement Is All You Need}。对应均方根定义与 FLOPs / 时间差异。
+\item \href{https://arxiv.org/abs/2002.05202}{Shazeer：GLU Variants Improve Transformer}；\href{https://arxiv.org/abs/2102.11972}{Narang 等：Do Transformer Modifications Transfer Across Implementations and Applications?}。对应门控公式、预算匹配及跨设置验证。
+\item \href{https://arxiv.org/abs/2104.09864}{Su 等：RoFormer}。对应第 3 节的位置编码推导与实现。
+\end{enumerate}
+
+\nextpage
+\subsection{直接相关原始资料：配置、推理与稳定性}
+\begin{enumerate}[start=6]
+\item \href{https://arxiv.org/abs/2001.08361}{Kaplan 等：Scaling Laws for Neural Language Models}；\href{https://arxiv.org/abs/2109.10686}{Tay 等：Scale Efficiently}。对应模型形状、质量和效率的比较边界。
+\item \href{https://arxiv.org/abs/1910.10683}{Raffel 等：Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer}。核对 T5-11B 的特殊 FFN 与头维度配置。
+\item \href{https://arxiv.org/abs/2204.02311}{Chowdhery 等：PaLM}。核对并行分支、无偏置、头维度与输出 z-loss。
+\item \href{https://arxiv.org/abs/1911.02150}{Shazeer：Fast Transformer Decoding}；\href{https://arxiv.org/abs/2305.13245}{Ainslie 等：GQA}。对应 KV 共享、增量解码、I/O 分析和质量取舍。
+\item \href{https://arxiv.org/abs/1904.10509}{Child 等：Generating Long Sequences with Sparse Transformers}。对应稀疏连接与多层信息可达性。
+\item \href{https://arxiv.org/abs/2310.04415}{D'Angelo、Andriushchenko 等：Why Do We Need Weight Decay in Modern Deep Learning?}。对应近单遍语言模型训练中的优化动态与低精度稳定性。
+\item \href{https://arxiv.org/abs/2408.00118}{Gemma Team：Gemma 2}；\href{https://arxiv.org/abs/2501.00656}{OLMo Team：2 OLMo 2 Furious}。核对分支归一化、QK-norm、z-loss、soft-capping 与局部／全局层的相关设计。
+\end{enumerate}
+
+\subsection{版本差异、纠正与补充解释}
+本笔记依据本次读取的 Spring 2026 官网和主分支课件。主分支可能继续更新，课件中的模型列表混合了不同年份的样本；“常见”仅概括相关样本，不能理解为永恒标准。文件指纹与具体检查结果见同目录 README 和检查记录。
+
+课件第 14 页的 RMSNorm 公式没有明确写出均方根的 $1/d$，笔记按原论文补全；第 43 页 PaLM 的头维度与比例存在不一致。按 PaLM 论文，540B 配置为 $48\times256/18432=2/3$，而非课件表中的 1.48。它仍支持“头总宽度不必等于模型宽度”，但方向与数值应重新核算。
+
+课件第 28 页引文中的串行块表达式易漏掉注意力残差贡献，笔记统一采用先算 $U$、再算 $Y$ 的完整两步式。MQA 的“一个维度”统一解释为一组 KV 头；算术强度推导明确区分整段、单步和累计口径。课件第 55 页的模型名单不作逐项事实表：例如 Gemma 2 报告的主要相关机制是 soft-capping 与子层双归一化，不能据名单推断它使用同样的 QK-norm。
+
+小型连续例子、雅可比解释、参数与缓存手算、数值稳定例子、窗口感受野以及自测题为辅助推导，\textbf{不是课堂逐字记录或作业标准答案}。已覆盖课件全部教学主题，但未声称完整观看课堂录像、精读所有被展示的模型报告或独立验证每个模型的全部超参数。
+
+\end{document}
+
+
+
